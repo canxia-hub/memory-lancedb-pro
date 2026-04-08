@@ -6,6 +6,12 @@ This is a fork of [win4r/memory-lancedb-pro](https://github.com/win4r/memory-lan
 
 ## Version History
 
+### v1.1.3 (2026-04-09)
+
+- **Added**: DashScope multimodal embedding API support for `qwen3-vl-embedding`
+- **Fixed**: qwen3-vl-embedding no longer returns 404 error (it's not supported in OpenAI-compatible mode)
+- **Added**: Automatic markdown image parsing for multimodal content
+
 ### v1.1.2 (2026-04-08)
 
 - **Added**: Deployment & maintenance skill for new agents
