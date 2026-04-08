@@ -6,6 +6,13 @@ This is a fork of [win4r/memory-lancedb-pro](https://github.com/win4r/memory-lan
 
 ## Version History
 
+### v1.1.2 (2026-04-08)
+
+- **Added**: Deployment & maintenance skill for new agents
+- **Added**: Comprehensive configuration guide for all embedding providers
+- **Added**: Health check and troubleshooting documentation
+- **Added**: Best practices for memory management
+
 ### v1.1.1 (2026-04-08)
 
 - **Fixed**: Config schema validation error with OpenClaw 2026.4.5+ (`embedding must have required property 'embedding'`)
