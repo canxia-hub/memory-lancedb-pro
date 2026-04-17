@@ -426,6 +426,15 @@ function resolveAgentWorkspaceMapFromConfig(config: Record<string, any>): AgentW
   return map;
 }
 
+const EXPECTED_BRIDGE_KINDS = [
+  "memory-root",
+  "daily-note",
+  "dream-report",
+  "event-log",
+] as const;
+
+type BridgeArtifactKind = typeof EXPECTED_BRIDGE_KINDS[number];
+
 function summarizeArtifactsByKind(
   artifacts: Array<{ kind: string }>,
 ): Record<string, number> {
@@ -434,6 +443,44 @@ function summarizeArtifactsByKind(
     counts[artifact.kind] = (counts[artifact.kind] || 0) + 1;
   }
   return counts;
+}
+
+function resolveMissingBridgeKinds(kinds: Record<string, number>): BridgeArtifactKind[] {
+  return EXPECTED_BRIDGE_KINDS.filter((kind) => !kinds[kind]);
+}
+
+function explainMissingBridgeKinds(missingKinds: BridgeArtifactKind[]): {
+  issues: string[];
+  recommendations: string[];
+} {
+  const issues: string[] = [];
+  const recommendations: string[] = [];
+
+  if (missingKinds.includes("memory-root")) {
+    issues.push("MEMORY.md is not exported yet.");
+    recommendations.push("Create or mirror durable memory into MEMORY.md so bridge mode can expose a memory-root artifact.");
+  }
+  if (missingKinds.includes("daily-note")) {
+    issues.push("No daily note files under memory/YYYY-MM-DD.md are exported yet.");
+    recommendations.push("Write or mirror daily notes into memory/YYYY-MM-DD.md if you want memory-wiki bridge mode to ingest short-term note pages.");
+  }
+  if (missingKinds.includes("dream-report")) {
+    issues.push("No DREAMS.md or memory/dreaming/<phase>/YYYY-MM-DD.md reports are exported yet.");
+    recommendations.push("Run the reflection/session-summary/dreaming flows so REM or Deep outputs generate dream-report artifacts.");
+  }
+  if (missingKinds.includes("event-log")) {
+    issues.push("No memory host event log is exported yet.");
+    recommendations.push("Trigger recall, promotion, or dreaming once so the host event log is created for followMemoryEvents.");
+  }
+
+  if (missingKinds.length === EXPECTED_BRIDGE_KINDS.length) {
+    issues.unshift("This workspace is not exporting any bridge-visible artifacts yet.");
+  }
+
+  return {
+    issues,
+    recommendations,
+  };
 }
 
 function formatRetrievalDiagnosticsLines(diagnostics: {
@@ -608,10 +655,13 @@ export function registerMemoryCLI(program: Command, context: CLIContext): void {
         const provider = createMemoryPublicArtifactsProvider({ workspaceMap });
         const artifacts = await provider.listArtifacts({ cfg: openclawConfig });
         const byKind = summarizeArtifactsByKind(artifacts);
+        const workspaceDirs = [...new Set(Object.values(workspaceMap))].sort();
         const workspaceSummaries = await Promise.all(
-          [...new Set(artifacts.map((artifact) => artifact.workspaceDir))].sort().map(async (workspaceDir) => {
+          workspaceDirs.map(async (workspaceDir) => {
             const workspaceArtifacts = artifacts.filter((artifact) => artifact.workspaceDir === workspaceDir);
             const kinds = summarizeArtifactsByKind(workspaceArtifacts);
+            const missingKinds = resolveMissingBridgeKinds(kinds);
+            const diagnosis = explainMissingBridgeKinds(missingKinds);
             let lastEvent: { type: string; timestamp?: string } | null = null;
             try {
               const events = await readMemoryHostEvents({ workspaceDir, limit: 1 });
@@ -626,9 +676,18 @@ export function registerMemoryCLI(program: Command, context: CLIContext): void {
             }
             return {
               workspaceDir,
-              agentIds: [...new Set(workspaceArtifacts.flatMap((artifact) => artifact.agentIds))].sort(),
+              agentIds: [...new Set(
+                Object.entries(workspaceMap)
+                  .filter(([, candidateWorkspaceDir]) => candidateWorkspaceDir === workspaceDir)
+                  .map(([agentId]) => agentId),
+              )].sort(),
               artifactCount: workspaceArtifacts.length,
               kinds,
+              missingKinds,
+              bridgeImportReady: workspaceArtifacts.length > 0,
+              eventBridgeReady: (kinds["event-log"] || 0) > 0,
+              issues: diagnosis.issues,
+              recommendations: diagnosis.recommendations,
               lastEvent,
               samplePaths: workspaceArtifacts.slice(0, 8).map((artifact) => ({
                 kind: artifact.kind,
@@ -638,6 +697,9 @@ export function registerMemoryCLI(program: Command, context: CLIContext): void {
           }),
         );
 
+        const overallMissingKinds = resolveMissingBridgeKinds(byKind);
+        const overallDiagnosis = explainMissingBridgeKinds(overallMissingKinds);
+
         const payload = {
           plugin: context.pluginId || "memory-lancedb-pro",
           configPath,
@@ -646,6 +708,9 @@ export function registerMemoryCLI(program: Command, context: CLIContext): void {
           bridgeReady: artifacts.length > 0,
           eventBridgeReady: (byKind["event-log"] || 0) > 0,
           kinds: byKind,
+          missingKinds: overallMissingKinds,
+          issues: overallDiagnosis.issues,
+          recommendations: overallDiagnosis.recommendations,
           workspaces: workspaceSummaries,
         };
 
@@ -661,16 +726,44 @@ export function registerMemoryCLI(program: Command, context: CLIContext): void {
         console.log(`Bridge ready: ${payload.bridgeReady ? "yes" : "no"}`);
         console.log(`Event bridge ready: ${payload.eventBridgeReady ? "yes" : "no"}`);
         console.log(`Kinds: ${Object.keys(payload.kinds).length > 0 ? Object.entries(payload.kinds).map(([kind, count]) => `${kind}=${count}`).join(", ") : "(none)"}`);
+        console.log(`Missing kinds: ${payload.missingKinds.length > 0 ? payload.missingKinds.join(", ") : "(none)"}`);
+        if (payload.issues.length > 0) {
+          console.log("Issues:");
+          for (const issue of payload.issues) {
+            console.log(`  - ${issue}`);
+          }
+        }
+        if (payload.recommendations.length > 0) {
+          console.log("Recommendations:");
+          for (const recommendation of payload.recommendations) {
+            console.log(`  - ${recommendation}`);
+          }
+        }
         if (payload.workspaces.length === 0) {
-          console.log("\nNo exported public artifacts yet.");
+          console.log("\nNo configured workspaces found.");
           return;
         }
         for (const workspace of payload.workspaces) {
           console.log(`\n[${workspace.workspaceDir}]`);
           console.log(`  Agents: ${workspace.agentIds.length > 0 ? workspace.agentIds.join(", ") : "unknown"}`);
           console.log(`  Artifacts: ${workspace.artifactCount}`);
+          console.log(`  Bridge import ready: ${workspace.bridgeImportReady ? "yes" : "no"}`);
+          console.log(`  Event bridge ready: ${workspace.eventBridgeReady ? "yes" : "no"}`);
           console.log(`  Kinds: ${Object.keys(workspace.kinds).length > 0 ? Object.entries(workspace.kinds).map(([kind, count]) => `${kind}=${count}`).join(", ") : "(none)"}`);
+          console.log(`  Missing kinds: ${workspace.missingKinds.length > 0 ? workspace.missingKinds.join(", ") : "(none)"}`);
           console.log(`  Last event: ${workspace.lastEvent ? `${workspace.lastEvent.type} @ ${workspace.lastEvent.timestamp || "unknown"}` : "(none)"}`);
+          if (workspace.issues.length > 0) {
+            console.log("  Issues:");
+            for (const issue of workspace.issues) {
+              console.log(`    - ${issue}`);
+            }
+          }
+          if (workspace.recommendations.length > 0) {
+            console.log("  Recommendations:");
+            for (const recommendation of workspace.recommendations) {
+              console.log(`    - ${recommendation}`);
+            }
+          }
           for (const sample of workspace.samplePaths) {
             console.log(`    - [${sample.kind}] ${sample.relativePath}`);
           }
