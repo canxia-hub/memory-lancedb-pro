@@ -58,6 +58,7 @@ import {
   createMemoryHostEventWriter,
   createMemoryPublicArtifactsProvider,
 } from "./src/memory-host-interop.js";
+import { createDreamingInteropWriter } from "./src/dreaming-interop.js";
 
 // Import smart extraction & lifecycle components
 import { SmartExtractor, createExtractionRateLimiter } from "./src/smart-extractor.js";
@@ -2050,6 +2051,9 @@ const memoryLanceDBProPlugin = {
       workspaceMap,
       logger: api.logger,
     });
+    const dreamingInteropWriter = createDreamingInteropWriter({
+      logger: api.logger,
+    });
     const memoryRuntime = {
       async getMemorySearchManager(_params: any) {
         return {
@@ -2147,6 +2151,7 @@ const memoryLanceDBProPlugin = {
         mdMirror,
         workspaceBoundary: config.workspaceBoundary,
         hostEvents: hostEventWriter,
+        dreamingInterop: dreamingInteropWriter,
       },
       {
         enableManagementTools: config.enableManagementTools,
@@ -3509,6 +3514,15 @@ const memoryLanceDBProPlugin = {
           const dailyPath = join(workspaceDir, "memory", `${dateStr}.md`);
           await ensureDailyLogFile(dailyPath, dateStr);
           await appendFile(dailyPath, `- [${timeHms} UTC] Reflection generated: \`${relPath}\`\n`, "utf-8");
+          await dreamingInteropWriter.recordRemReflection({
+            workspaceDir,
+            agentId: sourceAgentId,
+            sessionKey,
+            sessionId: currentSessionId || "unknown",
+            sourceReflectionPath: relPath,
+            reflectionText,
+            timestampMs: nowTs,
+          });
 
           api.logger.info(`memory-reflection: wrote ${relPath} for session ${currentSessionId}`);
         } catch (err) {
@@ -3594,6 +3608,15 @@ const memoryLanceDBProPlugin = {
               },
             ),
           ),
+        });
+        await dreamingInteropWriter.recordLightSessionSummary({
+          workspaceDir: resolveWorkspaceDirForAgent(params.agentId),
+          agentId: params.agentId,
+          sessionKey: params.sessionKey,
+          sessionId: params.sessionId,
+          source: params.source,
+          summaryText: params.sessionContent,
+          timestampMs: params.timestampMs,
         });
 
         api.logger.info(

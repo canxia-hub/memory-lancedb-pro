@@ -31,6 +31,7 @@ import {
   type WorkspaceBoundaryConfig,
 } from "./workspace-boundary.js";
 import type { MemoryHostEventWriter } from "./memory-host-interop.js";
+import type { DreamingInteropWriter } from "./dreaming-interop.js";
 
 // ============================================================================
 // Types
@@ -66,6 +67,7 @@ interface ToolContext {
   mdMirror?: MdMirrorWriter | null;
   workspaceBoundary?: WorkspaceBoundaryConfig;
   hostEvents?: MemoryHostEventWriter | null;
+  dreamingInterop?: DreamingInteropWriter | null;
 }
 
 function resolveAgentId(runtimeAgentId: unknown, fallback?: string): string | undefined {
@@ -1898,6 +1900,13 @@ export function registerMemoryPromoteTool(
           await runtimeContext.hostEvents?.recordPromotion({
             agentId,
             entry: updated,
+          });
+          await runtimeContext.dreamingInterop?.recordDeepPromotion({
+            workspaceDir: runtimeContext.workspaceDir,
+            agentId,
+            entry: updated,
+            state,
+            layer,
           });
 
           return {
