@@ -434,6 +434,7 @@ const EXPECTED_BRIDGE_KINDS = [
 ] as const;
 
 type BridgeArtifactKind = typeof EXPECTED_BRIDGE_KINDS[number];
+type BridgeDoctorStatus = "ok" | "warn" | "fail";
 
 function summarizeArtifactsByKind(
   artifacts: Array<{ kind: string }>,
@@ -481,6 +482,33 @@ function explainMissingBridgeKinds(missingKinds: BridgeArtifactKind[]): {
     issues,
     recommendations,
   };
+}
+
+function resolveBridgeDoctorStatus(params: {
+  workspaceCount: number;
+  artifactCount: number;
+  missingKinds: BridgeArtifactKind[];
+}): BridgeDoctorStatus {
+  if (params.workspaceCount === 0 || params.artifactCount === 0) return "fail";
+  if (params.missingKinds.length > 0) return "warn";
+  return "ok";
+}
+
+function buildBridgeDoctorSummary(params: {
+  status: BridgeDoctorStatus;
+  workspaceCount: number;
+  artifactCount: number;
+  missingKinds: BridgeArtifactKind[];
+}): string {
+  if (params.status === "ok") {
+    return `Bridge exports look complete across ${params.workspaceCount} workspace(s).`;
+  }
+  if (params.status === "fail") {
+    return params.workspaceCount === 0
+      ? "No configured workspaces were found for bridge inspection."
+      : "No bridge-visible artifacts are exported yet.";
+  }
+  return `Bridge exports are partial. Missing kinds: ${params.missingKinds.join(", ")}.`;
 }
 
 function formatRetrievalDiagnosticsLines(diagnostics: {
@@ -643,6 +671,8 @@ export function registerMemoryCLI(program: Command, context: CLIContext): void {
     .command("bridge-status")
     .description("Show public artifact export readiness for memory-wiki bridge mode")
     .option("--config <path>", "OpenClaw config file to inspect")
+    .option("--doctor", "Include doctor-style readiness verdicts")
+    .option("--strict", "With --doctor, exit non-zero when bridge exports are incomplete")
     .option("--json", "Output as JSON")
     .action(async (options) => {
       try {
@@ -674,6 +704,11 @@ export function registerMemoryCLI(program: Command, context: CLIContext): void {
             } catch {
               lastEvent = null;
             }
+            const doctorStatus = resolveBridgeDoctorStatus({
+              workspaceCount: 1,
+              artifactCount: workspaceArtifacts.length,
+              missingKinds,
+            });
             return {
               workspaceDir,
               agentIds: [...new Set(
@@ -689,6 +724,15 @@ export function registerMemoryCLI(program: Command, context: CLIContext): void {
               issues: diagnosis.issues,
               recommendations: diagnosis.recommendations,
               lastEvent,
+              doctor: {
+                status: doctorStatus,
+                summary: buildBridgeDoctorSummary({
+                  status: doctorStatus,
+                  workspaceCount: 1,
+                  artifactCount: workspaceArtifacts.length,
+                  missingKinds,
+                }),
+              },
               samplePaths: workspaceArtifacts.slice(0, 8).map((artifact) => ({
                 kind: artifact.kind,
                 relativePath: artifact.relativePath,
@@ -699,11 +743,17 @@ export function registerMemoryCLI(program: Command, context: CLIContext): void {
 
         const overallMissingKinds = resolveMissingBridgeKinds(byKind);
         const overallDiagnosis = explainMissingBridgeKinds(overallMissingKinds);
+        const overallWorkspaceCount = new Set(Object.values(workspaceMap)).size;
+        const overallDoctorStatus = resolveBridgeDoctorStatus({
+          workspaceCount: overallWorkspaceCount,
+          artifactCount: artifacts.length,
+          missingKinds: overallMissingKinds,
+        });
 
         const payload = {
           plugin: context.pluginId || "memory-lancedb-pro",
           configPath,
-          workspaceCount: new Set(Object.values(workspaceMap)).size,
+          workspaceCount: overallWorkspaceCount,
           artifactCount: artifacts.length,
           bridgeReady: artifacts.length > 0,
           eventBridgeReady: (byKind["event-log"] || 0) > 0,
@@ -711,11 +761,37 @@ export function registerMemoryCLI(program: Command, context: CLIContext): void {
           missingKinds: overallMissingKinds,
           issues: overallDiagnosis.issues,
           recommendations: overallDiagnosis.recommendations,
-          workspaces: workspaceSummaries,
+          ...(options.doctor ? {
+            doctor: {
+              status: overallDoctorStatus,
+              summary: buildBridgeDoctorSummary({
+                status: overallDoctorStatus,
+                workspaceCount: overallWorkspaceCount,
+                artifactCount: artifacts.length,
+                missingKinds: overallMissingKinds,
+              }),
+            },
+          } : {}),
+          workspaces: workspaceSummaries.map((workspace) => options.doctor ? workspace : {
+            workspaceDir: workspace.workspaceDir,
+            agentIds: workspace.agentIds,
+            artifactCount: workspace.artifactCount,
+            kinds: workspace.kinds,
+            missingKinds: workspace.missingKinds,
+            bridgeImportReady: workspace.bridgeImportReady,
+            eventBridgeReady: workspace.eventBridgeReady,
+            issues: workspace.issues,
+            recommendations: workspace.recommendations,
+            lastEvent: workspace.lastEvent,
+            samplePaths: workspace.samplePaths,
+          }),
         };
 
         if (options.json) {
           console.log(formatJson(payload));
+          if (options.doctor && options.strict && payload.doctor && payload.doctor.status !== "ok") {
+            process.exitCode = 2;
+          }
           return;
         }
 
@@ -727,6 +803,10 @@ export function registerMemoryCLI(program: Command, context: CLIContext): void {
         console.log(`Event bridge ready: ${payload.eventBridgeReady ? "yes" : "no"}`);
         console.log(`Kinds: ${Object.keys(payload.kinds).length > 0 ? Object.entries(payload.kinds).map(([kind, count]) => `${kind}=${count}`).join(", ") : "(none)"}`);
         console.log(`Missing kinds: ${payload.missingKinds.length > 0 ? payload.missingKinds.join(", ") : "(none)"}`);
+        if (options.doctor && payload.doctor) {
+          console.log(`Doctor status: ${payload.doctor.status}`);
+          console.log(`Doctor summary: ${payload.doctor.summary}`);
+        }
         if (payload.issues.length > 0) {
           console.log("Issues:");
           for (const issue of payload.issues) {
@@ -741,6 +821,9 @@ export function registerMemoryCLI(program: Command, context: CLIContext): void {
         }
         if (payload.workspaces.length === 0) {
           console.log("\nNo configured workspaces found.");
+          if (options.doctor && options.strict && payload.doctor && payload.doctor.status !== "ok") {
+            process.exitCode = 2;
+          }
           return;
         }
         for (const workspace of payload.workspaces) {
@@ -752,6 +835,10 @@ export function registerMemoryCLI(program: Command, context: CLIContext): void {
           console.log(`  Kinds: ${Object.keys(workspace.kinds).length > 0 ? Object.entries(workspace.kinds).map(([kind, count]) => `${kind}=${count}`).join(", ") : "(none)"}`);
           console.log(`  Missing kinds: ${workspace.missingKinds.length > 0 ? workspace.missingKinds.join(", ") : "(none)"}`);
           console.log(`  Last event: ${workspace.lastEvent ? `${workspace.lastEvent.type} @ ${workspace.lastEvent.timestamp || "unknown"}` : "(none)"}`);
+          if (options.doctor && workspace.doctor) {
+            console.log(`  Doctor status: ${workspace.doctor.status}`);
+            console.log(`  Doctor summary: ${workspace.doctor.summary}`);
+          }
           if (workspace.issues.length > 0) {
             console.log("  Issues:");
             for (const issue of workspace.issues) {
@@ -767,6 +854,9 @@ export function registerMemoryCLI(program: Command, context: CLIContext): void {
           for (const sample of workspace.samplePaths) {
             console.log(`    - [${sample.kind}] ${sample.relativePath}`);
           }
+        }
+        if (options.doctor && options.strict && payload.doctor && payload.doctor.status !== "ok") {
+          process.exitCode = 2;
         }
       } catch (error) {
         console.error("Bridge status failed:", error);
