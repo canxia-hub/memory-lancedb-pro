@@ -24,6 +24,12 @@ import {
   normalizeOAuthProviderId,
   performOAuthLogin,
 } from "./src/llm-oauth.js";
+import {
+  buildDefaultWorkspaceMap,
+  createMemoryPublicArtifactsProvider,
+  type AgentWorkspaceMap,
+} from "./src/memory-host-interop.js";
+import { readMemoryHostEvents } from "openclaw/plugin-sdk/memory-host-events";
 
 // ============================================================================
 // Types
@@ -409,6 +415,27 @@ function formatJson(obj: any): string {
   return JSON.stringify(obj, null, 2);
 }
 
+function resolveAgentWorkspaceMapFromConfig(config: Record<string, any>): AgentWorkspaceMap {
+  const map: AgentWorkspaceMap = {};
+  const list = Array.isArray(config?.agents?.list) ? config.agents.list : [];
+  for (const agent of list) {
+    if (agent?.id && typeof agent.workspace === "string" && agent.workspace.trim()) {
+      map[String(agent.id)] = path.resolve(agent.workspace);
+    }
+  }
+  return map;
+}
+
+function summarizeArtifactsByKind(
+  artifacts: Array<{ kind: string }>,
+): Record<string, number> {
+  const counts: Record<string, number> = {};
+  for (const artifact of artifacts) {
+    counts[artifact.kind] = (counts[artifact.kind] || 0) + 1;
+  }
+  return counts;
+}
+
 function formatRetrievalDiagnosticsLines(diagnostics: {
   originalQuery: string;
   bm25Query: string | null;
@@ -563,6 +590,95 @@ export function registerMemoryCLI(program: Command, context: CLIContext): void {
     .description("Print plugin version")
     .action(() => {
       console.log(getPluginVersion());
+    });
+
+  memory
+    .command("bridge-status")
+    .description("Show public artifact export readiness for memory-wiki bridge mode")
+    .option("--config <path>", "OpenClaw config file to inspect")
+    .option("--json", "Output as JSON")
+    .action(async (options) => {
+      try {
+        const configPath = resolveOpenClawConfigPath(options.config);
+        const openclawConfig = await loadOpenClawConfig(configPath);
+        const workspaceMap = buildDefaultWorkspaceMap({
+          workspaceMap: resolveAgentWorkspaceMapFromConfig(openclawConfig),
+          defaultWorkspaceDir: path.join(resolveOpenClawHome(), "workspace"),
+        });
+        const provider = createMemoryPublicArtifactsProvider({ workspaceMap });
+        const artifacts = await provider.listArtifacts({ cfg: openclawConfig });
+        const byKind = summarizeArtifactsByKind(artifacts);
+        const workspaceSummaries = await Promise.all(
+          [...new Set(artifacts.map((artifact) => artifact.workspaceDir))].sort().map(async (workspaceDir) => {
+            const workspaceArtifacts = artifacts.filter((artifact) => artifact.workspaceDir === workspaceDir);
+            const kinds = summarizeArtifactsByKind(workspaceArtifacts);
+            let lastEvent: { type: string; timestamp?: string } | null = null;
+            try {
+              const events = await readMemoryHostEvents({ workspaceDir, limit: 1 });
+              if (events.length > 0) {
+                lastEvent = {
+                  type: events[0].type,
+                  timestamp: events[0].timestamp,
+                };
+              }
+            } catch {
+              lastEvent = null;
+            }
+            return {
+              workspaceDir,
+              agentIds: [...new Set(workspaceArtifacts.flatMap((artifact) => artifact.agentIds))].sort(),
+              artifactCount: workspaceArtifacts.length,
+              kinds,
+              lastEvent,
+              samplePaths: workspaceArtifacts.slice(0, 8).map((artifact) => ({
+                kind: artifact.kind,
+                relativePath: artifact.relativePath,
+              })),
+            };
+          }),
+        );
+
+        const payload = {
+          plugin: context.pluginId || "memory-lancedb-pro",
+          configPath,
+          workspaceCount: new Set(Object.values(workspaceMap)).size,
+          artifactCount: artifacts.length,
+          bridgeReady: artifacts.length > 0,
+          eventBridgeReady: (byKind["event-log"] || 0) > 0,
+          kinds: byKind,
+          workspaces: workspaceSummaries,
+        };
+
+        if (options.json) {
+          console.log(formatJson(payload));
+          return;
+        }
+
+        console.log(`Plugin: ${payload.plugin}`);
+        console.log(`Config file: ${payload.configPath}`);
+        console.log(`Workspaces: ${payload.workspaceCount}`);
+        console.log(`Artifacts exported: ${payload.artifactCount}`);
+        console.log(`Bridge ready: ${payload.bridgeReady ? "yes" : "no"}`);
+        console.log(`Event bridge ready: ${payload.eventBridgeReady ? "yes" : "no"}`);
+        console.log(`Kinds: ${Object.keys(payload.kinds).length > 0 ? Object.entries(payload.kinds).map(([kind, count]) => `${kind}=${count}`).join(", ") : "(none)"}`);
+        if (payload.workspaces.length === 0) {
+          console.log("\nNo exported public artifacts yet.");
+          return;
+        }
+        for (const workspace of payload.workspaces) {
+          console.log(`\n[${workspace.workspaceDir}]`);
+          console.log(`  Agents: ${workspace.agentIds.length > 0 ? workspace.agentIds.join(", ") : "unknown"}`);
+          console.log(`  Artifacts: ${workspace.artifactCount}`);
+          console.log(`  Kinds: ${Object.keys(workspace.kinds).length > 0 ? Object.entries(workspace.kinds).map(([kind, count]) => `${kind}=${count}`).join(", ") : "(none)"}`);
+          console.log(`  Last event: ${workspace.lastEvent ? `${workspace.lastEvent.type} @ ${workspace.lastEvent.timestamp || "unknown"}` : "(none)"}`);
+          for (const sample of workspace.samplePaths) {
+            console.log(`    - [${sample.kind}] ${sample.relativePath}`);
+          }
+        }
+      } catch (error) {
+        console.error("Bridge status failed:", error);
+        process.exit(1);
+      }
     });
 
   const auth = memory
