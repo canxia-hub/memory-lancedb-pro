@@ -30,6 +30,7 @@ import {
   isUserMdExclusiveMemory,
   type WorkspaceBoundaryConfig,
 } from "./workspace-boundary.js";
+import type { MemoryHostEventWriter } from "./memory-host-interop.js";
 
 // ============================================================================
 // Types
@@ -64,6 +65,7 @@ interface ToolContext {
   workspaceDir?: string;
   mdMirror?: MdMirrorWriter | null;
   workspaceBoundary?: WorkspaceBoundaryConfig;
+  hostEvents?: MemoryHostEventWriter | null;
 }
 
 function resolveAgentId(runtimeAgentId: unknown, fallback?: string): string | undefined {
@@ -600,6 +602,11 @@ export function registerMemoryRecallTool(
               );
             }),
           );
+          await runtimeContext.hostEvents?.recordRecall({
+            agentId,
+            query,
+            results,
+          });
 
           const text = results
             .map((r, i) => {
@@ -1887,6 +1894,11 @@ export function registerMemoryPromoteTool(
               details: { error: "promote_failed", id: resolved.id },
             };
           }
+
+          await runtimeContext.hostEvents?.recordPromotion({
+            agentId,
+            entry: updated,
+          });
 
           return {
             content: [{

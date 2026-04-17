@@ -52,6 +52,12 @@ import { buildReflectionMappedMetadata } from "./src/reflection-mapped-metadata.
 import { createMemoryCLI } from "./cli.js";
 import { isNoise } from "./src/noise-filter.js";
 import { normalizeAutoCaptureText } from "./src/auto-capture-cleanup.js";
+import {
+  buildDefaultWorkspaceMap,
+  buildMemoryInteropDiagnostics,
+  createMemoryHostEventWriter,
+  createMemoryPublicArtifactsProvider,
+} from "./src/memory-host-interop.js";
 
 // Import smart extraction & lifecycle components
 import { SmartExtractor, createExtractionRateLimiter } from "./src/smart-extractor.js";
@@ -2025,6 +2031,49 @@ const memoryLanceDBProPlugin = {
     // Updated by runStartupChecks after testing embedder and retriever
     let embedHealth: { ok: boolean; error?: string } = { ok: false, error: "startup not complete" };
     let retrievalHealth: boolean = false;
+    const workspaceMap = buildDefaultWorkspaceMap({
+      workspaceMap: resolveAgentWorkspaceMap(api),
+      defaultWorkspaceDir: getDefaultWorkspaceDir(),
+    });
+    const memoryInteropDiagnostics = buildMemoryInteropDiagnostics({ workspaceMap });
+    const resolveWorkspaceDirForAgent = (agentId?: string): string | undefined => {
+      if (agentId && workspaceMap[agentId]) {
+        return workspaceMap[agentId];
+      }
+      return getDefaultWorkspaceDir();
+    };
+    const hostEventWriter = createMemoryHostEventWriter({
+      resolveWorkspaceDir: resolveWorkspaceDirForAgent,
+      logger: api.logger,
+    });
+    const publicArtifactsProvider = createMemoryPublicArtifactsProvider({
+      workspaceMap,
+      logger: api.logger,
+    });
+    const memoryRuntime = {
+      async getMemorySearchManager(_params: any) {
+        return {
+          manager: {
+            status: () => ({
+              backend: "builtin" as const,
+              provider: "memory-lancedb-pro",
+              custom: {
+                embeddingAvailable: embedHealth.ok,
+                retrievalAvailable: retrievalHealth,
+                publicArtifactsAvailable: true,
+                hostEventBridgeAvailable: true,
+                interopWorkspaceCount: memoryInteropDiagnostics.workspaceCount,
+              },
+            }),
+            probeEmbeddingAvailability: async () => ({ ...embedHealth }),
+            probeVectorAvailability: async () => retrievalHealth,
+          },
+        };
+      },
+      resolveMemoryBackendConfig() {
+        return { backend: "builtin" as const };
+      },
+    };
 
     // ========================================================================
     // Stub Memory Runtime (satisfies openclaw doctor memory plugin check)
@@ -2032,26 +2081,17 @@ const memoryLanceDBProPlugin = {
     // runtime interface, so we register a minimal stub to satisfy the check.
     // See: https://github.com/CortexReach/memory-lancedb-pro/issues/434
     // ========================================================================
-    if (typeof api.registerMemoryRuntime === "function") {
-      api.registerMemoryRuntime({
-        async getMemorySearchManager(_params: any) {
-          return {
-            manager: {
-              status: () => ({
-                backend: "builtin" as const,
-                provider: "memory-lancedb-pro",
-                embeddingAvailable: embedHealth.ok,
-                retrievalAvailable: retrievalHealth,
-              }),
-              probeEmbeddingAvailability: async () => ({ ...embedHealth }),
-              probeVectorAvailability: async () => retrievalHealth,
-            },
-          };
-        },
-        resolveMemoryBackendConfig() {
-          return { backend: "builtin" as const };
-        },
+    if (typeof api.registerMemoryCapability === "function") {
+      api.registerMemoryCapability({
+        runtime: memoryRuntime,
+        publicArtifacts: publicArtifactsProvider,
       });
+      api.logger.info(
+        `memory-lancedb-pro: memory capability registered (publicArtifacts + hostEvent bridge, workspaces=${memoryInteropDiagnostics.workspaceCount}, agents=${memoryInteropDiagnostics.agentCount})`,
+      );
+    } else if (typeof api.registerMemoryRuntime === "function") {
+      api.registerMemoryRuntime(memoryRuntime);
+      api.logger.info("memory-lancedb-pro: legacy memory runtime registered (registerMemoryCapability unavailable)");
     }
 
     api.on("message_received", (event: any, ctx: any) => {
@@ -2106,6 +2146,7 @@ const memoryLanceDBProPlugin = {
         workspaceDir: getDefaultWorkspaceDir(),
         mdMirror,
         workspaceBoundary: config.workspaceBoundary,
+        hostEvents: hostEventWriter,
       },
       {
         enableManagementTools: config.enableManagementTools,
@@ -2479,6 +2520,12 @@ const memoryLanceDBProPlugin = {
               );
             }),
           );
+          const selectedIdSet = new Set(selected.map((item) => item.id));
+          await hostEventWriter.recordRecall({
+            agentId,
+            query: recallQuery,
+            results: governanceEligible.filter((result) => selectedIdSet.has(result.entry.id)),
+          });
 
           const memoryContext = selected.map((item) => item.line).join("\n");
 
