@@ -69,12 +69,27 @@ function reverseWorkspaceMap(workspaceMap: AgentWorkspaceMap): Map<string, strin
   return reversed;
 }
 
+function resolveWorkspaceRelativePath(pathOrRelativePath: string, workspaceDir: string): string | null {
+  const absoluteCandidate = resolve(pathOrRelativePath);
+  const workspaceRelative = normalizeRelPath(relative(workspaceDir, absoluteCandidate));
+  if (!workspaceRelative.startsWith("../") && workspaceRelative !== "..") {
+    return workspaceRelative;
+  }
+
+  const normalizedInput = normalizeRelPath(pathOrRelativePath);
+  if (!normalizedInput.startsWith("../") && normalizedInput !== "..") {
+    return normalizedInput;
+  }
+  return null;
+}
+
 function classifyArtifact(relativePath: string): PublicArtifactRecord["kind"] | null {
   const normalized = normalizeRelPath(relativePath);
   if (normalized === "MEMORY.md") return "memory-root";
   if (normalized === "DREAMS.md" || normalized === "dreams.md") return "dream-report";
-  if (/^memory\/\d{4}-\d{2}-\d{2}\.md$/i.test(normalized)) return "daily-note";
+  if (/^memory\/(?:diary\/)?\d{4}-\d{2}-\d{2}(?:[^/]*)?\.md$/i.test(normalized)) return "daily-note";
   if (/^memory\/dreaming\/.+\.md$/i.test(normalized)) return "dream-report";
+  if (/^memory\/reflections\/daily-reports\/.+\.md$/i.test(normalized)) return "dream-report";
   return null;
 }
 
@@ -92,14 +107,15 @@ export function createMemoryPublicArtifactsProvider(params: {
         try {
           const relativePaths = await listMemoryFiles(workspaceDir);
           for (const relativePath of relativePaths) {
-            const normalizedRelativePath = normalizeRelPath(relativePath);
-            const kind = classifyArtifact(normalizedRelativePath);
+            const workspaceRelativePath = resolveWorkspaceRelativePath(relativePath, workspaceDir);
+            if (!workspaceRelativePath) continue;
+            const kind = classifyArtifact(workspaceRelativePath);
             if (!kind) continue;
-            const absolutePath = resolve(workspaceDir, normalizedRelativePath);
+            const absolutePath = resolve(workspaceDir, workspaceRelativePath);
             artifacts.set(absolutePath, {
               kind,
               workspaceDir,
-              relativePath: normalizedRelativePath,
+              relativePath: workspaceRelativePath,
               absolutePath,
               agentIds,
               contentType: "markdown",
