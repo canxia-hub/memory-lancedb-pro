@@ -1,4 +1,4 @@
-/**
+﻿/**
  * Agent Tool Definitions
  * Memory management tools for AI agents
  */
@@ -1549,7 +1549,7 @@ export function registerMemoryDebugTool(
         name: "memory_debug",
         label: "Memory Debug",
         description:
-          "Debug memory retrieval: search with full pipeline trace showing per-stage drop info, score ranges, and timing.",
+          "Debug memory retrieval with pipeline trace and rank explanation. Supports three modes: pipeline (show retrieval stages), rank (explain ranking), full (both).",
         parameters: Type.Object({
           query: Type.String({ description: "Search query to debug" }),
           limit: Type.Optional(
@@ -1558,10 +1558,16 @@ export function registerMemoryDebugTool(
           scope: Type.Optional(
             Type.String({ description: "Specific memory scope to search in (optional)" }),
           ),
+          mode: Type.Optional(
+            Type.String({
+              description: "Output mode: 'pipeline' (stages trace), 'rank' (ranking explanation), 'full' (both). Default: full",
+              enum: ["pipeline", "rank", "full"],
+            }),
+          ),
         }),
         async execute(_toolCallId, params) {
-          const { query, limit = 5, scope } = params as {
-            query: string; limit?: number; scope?: string;
+          const { query, limit = 5, scope, mode = "full" } = params as {
+            query: string; limit?: number; scope?: string; mode?: "pipeline" | "rank" | "full";
           };
           try {
             const safeLimit = clampInt(limit, 1, 20);
@@ -1581,58 +1587,74 @@ export function registerMemoryDebugTool(
               query, limit: safeLimit, scopeFilter, source: "manual",
             });
 
-            const traceLines: string[] = [
-              `Retrieval Debug Trace:`,
-              `  Mode: ${trace.mode}`,
-              `  Total: ${trace.totalMs}ms`,
-              `  Stages:`,
-            ];
-            for (const stage of trace.stages) {
-              const dropped = Math.max(0, stage.inputCount - stage.outputCount);
-              const scoreStr = stage.scoreRange
-                ? ` scores=[${stage.scoreRange[0].toFixed(3)}, ${stage.scoreRange[1].toFixed(3)}]`
-                : "";
-              // For search stages (input=0), show "found N" instead of "dropped -N"
-              const dropStr = stage.inputCount === 0
-                ? `found ${stage.outputCount}`
-                : `${stage.inputCount} -> ${stage.outputCount} (-${dropped})`;
-              traceLines.push(
-                `    ${stage.name}: ${dropStr} ${stage.durationMs}ms${scoreStr}`,
-              );
-              if (stage.droppedIds.length > 0 && stage.droppedIds.length <= 3) {
-                traceLines.push(`      dropped: ${stage.droppedIds.join(", ")}`);
-              } else if (stage.droppedIds.length > 3) {
+            // Build output based on mode
+            const outputParts: string[] = [];
+
+            // Pipeline trace (for "pipeline" and "full" modes)
+            if (mode === "pipeline" || mode === "full") {
+              const traceLines: string[] = [
+                `Retrieval Pipeline Trace:`,
+                `  Mode: ${trace.mode}`,
+                `  Total: ${trace.totalMs}ms`,
+                `  Stages:`,
+              ];
+              for (const stage of trace.stages) {
+                const dropped = Math.max(0, stage.inputCount - stage.outputCount);
+                const scoreStr = stage.scoreRange
+                  ? ` scores=[${stage.scoreRange[0].toFixed(3)}, ${stage.scoreRange[1].toFixed(3)}]`
+                  : "";
+                const dropStr = stage.inputCount === 0
+                  ? `found ${stage.outputCount}`
+                  : `${stage.inputCount} -> ${stage.outputCount} (-${dropped})`;
                 traceLines.push(
-                  `      dropped: ${stage.droppedIds.slice(0, 3).join(", ")} (+${stage.droppedIds.length - 3} more)`,
+                  `    ${stage.name}: ${dropStr} ${stage.durationMs}ms${scoreStr}`,
                 );
+                if (stage.droppedIds.length > 0 && stage.droppedIds.length <= 3) {
+                  traceLines.push(`      dropped: ${stage.droppedIds.join(", ")}`);
+                } else if (stage.droppedIds.length > 3) {
+                  traceLines.push(
+                    `      dropped: ${stage.droppedIds.slice(0, 3).join(", ")} (+${stage.droppedIds.length - 3} more)`,
+                  );
+                }
               }
+              outputParts.push(traceLines.join("\n"));
             }
 
             if (results.length === 0) {
-              traceLines.push(``, `No results survived the pipeline.`);
               return {
-                content: [{ type: "text", text: traceLines.join("\n") }],
-                details: { count: 0, query, trace },
+                content: [{ type: "text", text: outputParts.join("\n") + "\n\nNo results survived the pipeline." }],
+                details: { count: 0, query, trace, mode },
               };
             }
 
-            const resultLines = results.map((r, i) => {
-              const sources: string[] = [];
-              if (r.sources.vector) sources.push("vector");
-              if (r.sources.bm25) sources.push("BM25");
-              if (r.sources.reranked) sources.push("reranked");
-              const categoryTag = getDisplayCategoryTag(r.entry);
-              return `${i + 1}. [${r.entry.id}] [${categoryTag}] ${r.entry.text.slice(0, 120)}${r.entry.text.length > 120 ? "..." : ""} (${(r.score * 100).toFixed(1)}%${sources.length > 0 ? `, ${sources.join("+")}` : ""})`;
-            });
+            // Rank explanation (for "rank" and "full" modes)
+            if (mode === "rank" || mode === "full") {
+              const rankLines: string[] = [mode === "full" ? "" : "", "Rank Explanation:"];
+              for (let i = 0; i < results.length; i++) {
+                const r = results[i];
+                const meta = parseSmartMetadata(r.entry.metadata, r.entry);
+                const sourceBreakdown: string[] = [];
+                if (r.sources.vector) sourceBreakdown.push(`vec=${r.sources.vector.score.toFixed(3)}`);
+                if (r.sources.bm25) sourceBreakdown.push(`bm25=${r.sources.bm25.score.toFixed(3)}`);
+                if (r.sources.reranked) sourceBreakdown.push(`rerank=${r.sources.reranked.score.toFixed(3)}`);
+                rankLines.push(
+                  `${i + 1}. [${r.entry.id}] score=${r.score.toFixed(3)} ${sourceBreakdown.join(" ")}`,
+                  `   state=${meta.state} layer=${meta.memory_layer} source=${meta.source} tier=${meta.tier}`,
+                  `   access=${meta.access_count} injected=${meta.injected_count} badRecall=${meta.bad_recall_count}`,
+                  `   text=${truncateText(normalizeInlineText(meta.l0_abstract || r.entry.text), 180)}`,
+                );
+              }
+              outputParts.push(rankLines.join("\n"));
+            }
 
-            const text = [...traceLines, ``, `Results (${results.length}):`, ...resultLines].join("\n");
             return {
-              content: [{ type: "text", text }],
+              content: [{ type: "text", text: outputParts.join("\n") }],
               details: {
                 count: results.length,
                 memories: sanitizeMemoryForSerialization(results),
                 query,
                 trace,
+                mode,
               },
             };
           } catch (error) {
@@ -1939,18 +1961,20 @@ export function registerMemoryArchiveTool(
         name: "memory_archive",
         label: "Memory Archive",
         description:
-          "Archive a memory to remove it from default auto-recall while preserving history.",
+          "Archive (soft delete) or permanently delete a memory. Use hard=true for permanent deletion.",
         parameters: Type.Object({
           memoryId: Type.Optional(Type.String({ description: "Memory id (UUID/prefix)." })),
           query: Type.Optional(Type.String({ description: "Search query when memoryId is omitted." })),
           scope: Type.Optional(Type.String({ description: "Optional scope filter." })),
-          reason: Type.Optional(Type.String({ description: "Archive reason for audit trail." })),
+          hard: Type.Optional(Type.Boolean({ description: "Hard delete (permanent). Default: false (soft delete/archve)." })),
+          reason: Type.Optional(Type.String({ description: "Archive/delete reason for audit trail." })),
         }),
         async execute(_toolCallId, params, _signal, _onUpdate, runtimeCtx) {
-          const { memoryId, query, scope, reason = "manual_archive" } = params as {
+          const { memoryId, query, scope, hard = false, reason = "manual_archive" } = params as {
             memoryId?: string;
             query?: string;
             scope?: string;
+            hard?: boolean;
             reason?: string;
           };
           if (!memoryId && !query) {
@@ -1984,24 +2008,40 @@ export function registerMemoryArchiveTool(
             };
           }
 
-          const patch = {
-            state: "archived" as const,
-            memory_layer: "archive" as const,
-            archive_reason: reason,
-            archived_at: Date.now(),
-          };
-          const updated = await runtimeContext.store.patchMetadata(resolved.id, patch, scopeFilter);
-          if (!updated) {
+          if (hard) {
+            // Hard delete - permanently remove from database
+            const deleted = await runtimeContext.store.delete(resolved.id, scopeFilter);
+            if (!deleted) {
+              return {
+                content: [{ type: "text", text: `Failed to delete memory ${resolved.id.slice(0, 8)}.` }],
+                details: { error: "delete_failed", id: resolved.id },
+              };
+            }
             return {
-              content: [{ type: "text", text: `Failed to archive memory ${resolved.id.slice(0, 8)}.` }],
-              details: { error: "archive_failed", id: resolved.id },
+              content: [{ type: "text", text: `Permanently deleted memory ${resolved.id.slice(0, 8)}.` }],
+              details: { action: "deleted", id: resolved.id, reason, hard: true },
+            };
+          } else {
+            // Soft delete - archive
+            const patch = {
+              state: "archived" as const,
+              memory_layer: "archive" as const,
+              archive_reason: reason,
+              archived_at: Date.now(),
+            };
+            const updated = await runtimeContext.store.patchMetadata(resolved.id, patch, scopeFilter);
+            if (!updated) {
+              return {
+                content: [{ type: "text", text: `Failed to archive memory ${resolved.id.slice(0, 8)}.` }],
+                details: { error: "archive_failed", id: resolved.id },
+              };
+            }
+
+            return {
+              content: [{ type: "text", text: `Archived memory ${resolved.id.slice(0, 8)}.` }],
+              details: { action: "archived", id: resolved.id, reason, hard: false },
             };
           }
-
-          return {
-            content: [{ type: "text", text: `Archived memory ${resolved.id.slice(0, 8)}.` }],
-            details: { action: "archived", id: resolved.id, reason },
-          };
         },
       };
     },
@@ -2020,7 +2060,7 @@ export function registerMemoryCompactTool(
         name: "memory_compact",
         label: "Memory Compact",
         description:
-          "Compact duplicate low-value memories by archiving redundant entries and linking them to a canonical memory.",
+          "[DEPRECATED] Compact duplicate memories. Will be removed in v1.3.0. Use CLI or dreaming instead.",
         parameters: Type.Object({
           scope: Type.Optional(Type.String({ description: "Optional scope filter." })),
           dryRun: Type.Optional(Type.Boolean({ description: "Preview compaction only (default true)." })),
@@ -2032,6 +2072,9 @@ export function registerMemoryCompactTool(
             dryRun?: boolean;
             limit?: number;
           };
+          
+          // Deprecation warning
+          console.warn("memory_compact is deprecated and will be removed in v1.3.0. Use CLI or dreaming for batch operations.");
 
           const safeLimit = clampInt(limit, 20, 1000);
           const agentId = resolveRuntimeAgentId(runtimeContext.agentId, runtimeCtx);
@@ -2118,7 +2161,7 @@ export function registerMemoryExplainRankTool(
         name: "memory_explain_rank",
         label: "Memory Explain Rank",
         description:
-          "Run recall and explain why each memory was ranked, including governance metadata (state/layer/source/suppression).",
+          "[ALIAS] Equivalent to memory_debug(mode='rank'). Will be removed in v1.3.0. Use memory_debug with mode='rank' instead.",
         parameters: Type.Object({
           query: Type.String({ description: "Query used for ranking analysis." }),
           limit: Type.Optional(Type.Number({ description: "How many items to explain (default 5)." })),
@@ -2202,18 +2245,20 @@ export function registerAllMemoryTools(
   // Core tools (always enabled)
   registerMemoryRecallTool(api, context);
   registerMemoryStoreTool(api, context);
-  registerMemoryForgetTool(api, context);
   registerMemoryUpdateTool(api, context);
+  registerMemoryArchiveTool(api, context); // Unified archive/delete with hard parameter
 
   // Management tools (optional)
   if (options.enableManagementTools) {
     registerMemoryStatsTool(api, context);
-    registerMemoryDebugTool(api, context);
+    registerMemoryDebugTool(api, context); // Unified debug with mode parameter (pipeline/rank/full)
     registerMemoryListTool(api, context);
     registerMemoryPromoteTool(api, context);
-    registerMemoryArchiveTool(api, context);
-    registerMemoryCompactTool(api, context);
-    registerMemoryExplainRankTool(api, context);
+    registerMemoryCompactTool(api, context); // DEPRECATED: will be removed in v1.3.0
+    
+    // Aliases for backward compatibility (will be removed in v1.3.0)
+    registerMemoryForgetTool(api, context); // Alias for memory_archive(hard=true)
+    registerMemoryExplainRankTool(api, context); // Alias for memory_debug(mode="rank")
   }
   if (options.enableSelfImprovementTools !== false) {
     registerSelfImprovementLogTool(api, context);

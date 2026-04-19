@@ -104,13 +104,18 @@ export function createMemoryPublicArtifactsProvider(params: {
       const artifacts = new Map<string, PublicArtifactRecord>();
 
       for (const [workspaceDir, agentIds] of workspaceAgents.entries()) {
+        let rawPathCount = 0;
+        let recognizedCount = 0;
+
         try {
           const relativePaths = await listMemoryFiles(workspaceDir);
+          rawPathCount = relativePaths.length;
           for (const relativePath of relativePaths) {
             const workspaceRelativePath = resolveWorkspaceRelativePath(relativePath, workspaceDir);
             if (!workspaceRelativePath) continue;
             const kind = classifyArtifact(workspaceRelativePath);
             if (!kind) continue;
+            recognizedCount += 1;
             const absolutePath = resolve(workspaceDir, workspaceRelativePath);
             artifacts.set(absolutePath, {
               kind,
@@ -122,13 +127,14 @@ export function createMemoryPublicArtifactsProvider(params: {
             });
           }
         } catch (error) {
-          params.logger?.debug?.(
-            `memory-lancedb-pro: publicArtifacts skipped workspace ${workspaceDir}: ${String(error)}`,
+          params.logger?.warn?.(
+            `memory-lancedb-pro: publicArtifacts workspace scan failed for ${workspaceDir}: ${String(error)}`,
           );
         }
 
         const eventLogPath = resolveMemoryHostEventLogPath(workspaceDir);
-        if (await pathExists(eventLogPath)) {
+        const hasEventLog = await pathExists(eventLogPath);
+        if (hasEventLog) {
           artifacts.set(eventLogPath, {
             kind: "event-log",
             workspaceDir,
@@ -138,7 +144,15 @@ export function createMemoryPublicArtifactsProvider(params: {
             contentType: "json",
           });
         }
+
+        params.logger?.info?.(
+          `memory-lancedb-pro: publicArtifacts workspace=${workspaceDir} agents=${agentIds.join(",") || "-"} raw=${rawPathCount} recognized=${recognizedCount} eventLog=${hasEventLog ? "yes" : "no"}`,
+        );
       }
+
+      params.logger?.info?.(
+        `memory-lancedb-pro: publicArtifacts total=${artifacts.size} workspaces=${workspaceAgents.size}`,
+      );
 
       return [...artifacts.values()].sort((left, right) => {
         const workspaceOrder = left.workspaceDir.localeCompare(right.workspaceDir);

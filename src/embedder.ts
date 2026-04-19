@@ -145,6 +145,10 @@ const EMBEDDING_DIMENSIONS: Record<string, number> = {
   "all-MiniLM-L6-v2": 384,
   "all-mpnet-base-v2": 512,
 
+  // Qwen3 VL Embedding (DashScope)
+  "qwen3-vl-embedding": 2560,
+  "text-embedding-v3": 1024,
+
   // Jina v5
   "jina-embeddings-v5-text-small": 1024,
   "jina-embeddings-v5-text-nano": 768,
@@ -551,6 +555,104 @@ export class Embedder {
   }
 
   /**
+   * Check if this is a DashScope multimodal embedding model (qwen3-vl-embedding).
+   * These models require the native DashScope multimodal API, not OpenAI-compatible mode.
+   */
+  private isDashScopeMultimodalProvider(): boolean {
+    return this._model === 'qwen3-vl-embedding';
+  }
+
+  /**
+   * Call DashScope multimodal embedding API using native fetch.
+   * The qwen3-vl-embedding model is not supported in OpenAI-compatible mode.
+   */
+  private async embedWithDashScopeMultimodal(payload: any, signal?: AbortSignal): Promise<any> {
+    const endpoint = 'https://dashscope.aliyuncs.com/api/v1/services/embeddings/multimodal-embedding/multimodal-embedding';
+    const apiKey = this.clients[0]?.apiKey ?? '';
+
+    // Parse input - handle both string and array inputs
+    const inputs = Array.isArray(payload.input) ? payload.input : [payload.input];
+
+    // Build multimodal content array
+    // Extract images from markdown format: ![alt](data:image/...;base64,...) or URLs
+    const imageRegex = /!\[([^\]]*)\]\((data:image\/[^;]+;base64,[^)]+|https?:\/\/[^)]+)\)/g;
+
+    const contents = inputs.map((text: string) => {
+      const content: Array<{ text: string } | { image: string }> = [];
+      let lastIndex = 0;
+      let match;
+
+      while ((match = imageRegex.exec(text)) !== null) {
+        // Add text before image
+        if (match.index > lastIndex) {
+          const textPart = text.slice(lastIndex, match.index).trim();
+          if (textPart) content.push({ text: textPart });
+        }
+        // Add image
+        const imageUrl = match[2];
+        content.push({ image: imageUrl });
+        lastIndex = match.index + match[0].length;
+      }
+
+      // Add remaining text
+      if (lastIndex < text.length) {
+        const textPart = text.slice(lastIndex).trim();
+        if (textPart) content.push({ text: textPart });
+      }
+
+      // If no content was extracted, treat the whole input as text
+      if (content.length === 0 && text.trim()) {
+        content.push({ text: text.trim() });
+      }
+
+      return content;
+    });
+
+    const body = {
+      model: 'qwen3-vl-embedding',
+      input: {
+        contents: contents.length === 1 ? contents[0] : contents
+      },
+      parameters: {
+        text_type: 'query' // Use 'query' for all embeddings to ensure consistency
+      }
+    };
+
+    const response = await fetch(endpoint, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${apiKey}`,
+      },
+      body: JSON.stringify(body),
+      signal: signal,
+    });
+
+    if (!response.ok) {
+      const errorBody = await response.text().catch(() => '');
+      throw new Error(`DashScope multimodal embedding failed: ${response.status} ${response.statusText}\n${errorBody.slice(0, 500)}`);
+    }
+
+    const data = await response.json();
+
+    // Transform DashScope response to OpenAI-compatible format
+    // DashScope: { output: { embeddings: [{ embedding: number[], text_index: number }] } }
+    // OpenAI: { data: [{ embedding: number[], index: number }] }
+    if (data.output?.embeddings) {
+      return {
+        data: data.output.embeddings.map((item: any, idx: number) => ({
+          embedding: item.embedding,
+          index: item.text_index ?? idx,
+        })),
+        model: 'qwen3-vl-embedding',
+        object: 'list',
+      };
+    }
+
+    throw new Error('Unexpected DashScope multimodal response format');
+  }
+
+  /**
    * Call embeddings.create using native fetch (bypasses OpenAI SDK).
    * Used exclusively for Ollama endpoints where AbortController must work
    * correctly to avoid long-lived stalled sockets.
@@ -593,6 +695,18 @@ export class Embedder {
    * through the SDK's HTTP client on Node.js.
    */
   private async embedWithRetry(payload: any, signal?: AbortSignal): Promise<any> {
+    // Use DashScope multimodal API for qwen3-vl-embedding (not supported in OpenAI-compatible mode)
+    if (this.isDashScopeMultimodalProvider()) {
+      try {
+        return await this.embedWithDashScopeMultimodal(payload, signal);
+      } catch (error) {
+        if (error instanceof Error && error.name === 'AbortError') {
+          throw error;
+        }
+        throw error;
+      }
+    }
+
     // Use native fetch for Ollama to ensure proper AbortController support
     if (this.isOllamaProvider()) {
       try {

@@ -1,6 +1,6 @@
 ---
 name: memory-lancedb-pro-skills
-description: Memory LanceDB Pro 技能包入口。包含部署维护、经验提取等技能。
+description: Memory LanceDB Pro 技能包入口。包含部署维护、工具使用、经验提取等技能。
 ---
 
 # Memory LanceDB Pro Skills
@@ -8,6 +8,17 @@ description: Memory LanceDB Pro 技能包入口。包含部署维护、经验提
 本目录包含 Memory LanceDB Pro 插件配套的 Agent 技能。
 
 ## 技能列表
+
+### tools-guide
+
+**用途**: Agent 工具使用指南
+
+**触发词**: memory 工具、记忆工具、memory_recall、memory_store
+
+**包含内容**:
+- 所有 memory 工具的完整说明
+- 参数详解与使用场景
+- 最佳实践与常见问题
 
 ### deployment
 
@@ -37,6 +48,12 @@ description: Memory LanceDB Pro 技能包入口。包含部署维护、经验提
 
 ---
 
+## 运行时注意
+
+- 当前 Dreaming 的 **Light / REM / Deep** 输出链路以事件驱动为主，不是三条独立 cron。
+- 当前每日 03:00 的真实调度来源主要是 `Memory Dreaming Promotion`（memory-core）和宿主侧记忆整理任务。
+- `memory-wiki` 的 bridge 已可用，但 bridge markdown 清洗仍未完全落地，`wiki_lint` 仍可能出现噪音 warning。
+
 ## 使用方式
 
 技能会在以下场景自动加载：
@@ -47,4 +64,4 @@ description: Memory LanceDB Pro 技能包入口。包含部署维护、经验提
 
 ---
 
-*版本: 1.1.1 | 更新: 2026-04-08*
+*版本: 1.3.0 | 更新: 2026-04-19*

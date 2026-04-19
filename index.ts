@@ -59,6 +59,7 @@ import {
   createMemoryPublicArtifactsProvider,
 } from "./src/memory-host-interop.js";
 import { createDreamingInteropWriter } from "./src/dreaming-interop.js";
+import { runDailyDigest } from "./src/daily-digest.js";
 
 // Import smart extraction & lifecycle components
 import { SmartExtractor, createExtractionRateLimiter } from "./src/smart-extractor.js";
@@ -231,6 +232,49 @@ interface PluginConfig {
   extractionThrottle?: {
     skipLowValue?: boolean;
     maxExtractionsPerHour?: number;
+  };
+  // Dreaming configuration for background memory consolidation
+  dreaming?: {
+    enabled?: boolean;
+    frequency?: string;
+    timezone?: string;
+    verboseLogging?: boolean;
+    storage?: {
+      mode?: "inline" | "separate" | "both";
+      separateReports?: boolean;
+    };
+    execution?: {
+      speed?: "fast" | "balanced" | "slow";
+      thinking?: "low" | "medium" | "high";
+      budget?: "cheap" | "medium" | "expensive";
+      model?: string;
+    };
+    phases?: {
+      light?: {
+        enabled?: boolean;
+        cron?: string;
+        lookbackDays?: number;
+        limit?: number;
+        dedupeSimilarity?: number;
+      };
+      deep?: {
+        enabled?: boolean;
+        cron?: string;
+        limit?: number;
+        minScore?: number;
+        minRecallCount?: number;
+        minUniqueQueries?: number;
+        recencyHalfLifeDays?: number;
+        maxAgeDays?: number;
+      };
+      rem?: {
+        enabled?: boolean;
+        cron?: string;
+        lookbackDays?: number;
+        limit?: number;
+        minPatternStrength?: number;
+      };
+    };
   };
 }
 
@@ -2071,6 +2115,49 @@ const memoryLanceDBProPlugin = {
             }),
             probeEmbeddingAvailability: async () => ({ ...embedHealth }),
             probeVectorAvailability: async () => retrievalHealth,
+            /**
+             * Search memory entries for shared memory consumers (e.g., memory-wiki).
+             * Maps LanceDB RetrievalResult to MemorySearchResult expected by upstream.
+             */
+            async search(
+              query: string,
+              options?: { maxResults?: number },
+            ): Promise<
+              Array<{
+                path: string;
+                score: number;
+                snippet: string;
+                startLine?: number;
+                endLine?: number;
+                source?: string;
+                citation?: string;
+              }>
+            > {
+              const limit = options?.maxResults ?? 10;
+              const results = await retriever.retrieve({
+                query,
+                limit,
+                source: "auto-recall",
+              });
+              return results.map((r) => ({
+                path: `memory://${r.entry.scope}/${r.entry.id}`,
+                score: r.sources.reranked?.score ?? r.score,
+                snippet: r.entry.text.length > 200
+                  ? r.entry.text.slice(0, 200) + "..."
+                  : r.entry.text,
+                source: r.entry.category,
+                citation: r.entry.metadata
+                  ? (() => {
+                      try {
+                        const meta = JSON.parse(r.entry.metadata);
+                        return meta.citation ?? undefined;
+                      } catch {
+                        return undefined;
+                      }
+                    })()
+                  : undefined,
+              }));
+            },
           },
         };
       },
@@ -2190,6 +2277,29 @@ const memoryLanceDBProPlugin = {
           .catch((err) => {
             api.logger.warn(`memory-compactor [auto]: failed: ${String(err)}`);
           });
+      });
+    }
+
+    // ========================================================================
+    // Daily Digest - Generate complete.md and highlights.md from dreaming
+    // ========================================================================
+    if (config.dreaming?.enabled) {
+      api.on("gateway_start", async () => {
+        try {
+          const yesterday = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString().split("T")[0];
+          const result = await runDailyDigest({
+            workspaceDir: getDefaultWorkspaceDir(),
+            date: yesterday, // Process previous day's dreaming output
+            logger: api.logger,
+          });
+          if (result.sessionCount > 0) {
+            api.logger.info(
+              `memory-daily-digest: generated ${result.completePath} (${result.sessionCount} sessions, ${result.decisionCount} decisions)`
+            );
+          }
+        } catch (err) {
+          api.logger.warn(`memory-daily-digest: failed: ${String(err)}`);
+        }
       });
     }
 
@@ -4110,6 +4220,73 @@ export function parsePluginConfig(value: unknown): PluginConfig {
                 : 30,
           }
         : { skipLowValue: false, maxExtractionsPerHour: 30 },
+    // Dreaming configuration - parse from schema
+    dreaming:
+      typeof cfg.dreaming === "object" && cfg.dreaming !== null
+        ? (() => {
+            const d = cfg.dreaming as Record<string, unknown>;
+            const storage = typeof d.storage === "object" && d.storage !== null
+              ? d.storage as Record<string, unknown>
+              : undefined;
+            const execution = typeof d.execution === "object" && d.execution !== null
+              ? d.execution as Record<string, unknown>
+              : undefined;
+            const phases = typeof d.phases === "object" && d.phases !== null
+              ? d.phases as Record<string, unknown>
+              : undefined;
+            const light = phases && typeof phases.light === "object" && phases.light !== null
+              ? phases.light as Record<string, unknown>
+              : undefined;
+            const deep = phases && typeof phases.deep === "object" && phases.deep !== null
+              ? phases.deep as Record<string, unknown>
+              : undefined;
+            const rem = phases && typeof phases.rem === "object" && phases.rem !== null
+              ? phases.rem as Record<string, unknown>
+              : undefined;
+            return {
+              enabled: d.enabled === true,
+              frequency: typeof d.frequency === "string" ? d.frequency : undefined,
+              timezone: typeof d.timezone === "string" ? d.timezone : undefined,
+              verboseLogging: d.verboseLogging === true,
+              storage: storage ? {
+                mode: storage.mode as "inline" | "separate" | "both" | undefined,
+                separateReports: storage.separateReports === true,
+              } : undefined,
+              execution: execution ? {
+                speed: execution.speed as "fast" | "balanced" | "slow" | undefined,
+                thinking: execution.thinking as "low" | "medium" | "high" | undefined,
+                budget: execution.budget as "cheap" | "medium" | "expensive" | undefined,
+                model: typeof execution.model === "string" ? execution.model : undefined,
+              } : undefined,
+              phases: phases ? {
+                light: light ? {
+                  enabled: light.enabled !== false,
+                  cron: typeof light.cron === "string" ? light.cron : undefined,
+                  lookbackDays: parsePositiveInt(light.lookbackDays),
+                  limit: parsePositiveInt(light.limit),
+                  dedupeSimilarity: typeof light.dedupeSimilarity === "number" ? light.dedupeSimilarity : undefined,
+                } : undefined,
+                deep: deep ? {
+                  enabled: deep.enabled !== false,
+                  cron: typeof deep.cron === "string" ? deep.cron : undefined,
+                  limit: parsePositiveInt(deep.limit),
+                  minScore: typeof deep.minScore === "number" ? deep.minScore : undefined,
+                  minRecallCount: parsePositiveInt(deep.minRecallCount),
+                  minUniqueQueries: parsePositiveInt(deep.minUniqueQueries),
+                  recencyHalfLifeDays: parsePositiveInt(deep.recencyHalfLifeDays),
+                  maxAgeDays: parsePositiveInt(deep.maxAgeDays),
+                } : undefined,
+                rem: rem ? {
+                  enabled: rem.enabled !== false,
+                  cron: typeof rem.cron === "string" ? rem.cron : undefined,
+                  lookbackDays: parsePositiveInt(rem.lookbackDays),
+                  limit: parsePositiveInt(rem.limit),
+                  minPatternStrength: typeof rem.minPatternStrength === "number" ? rem.minPatternStrength : undefined,
+                } : undefined,
+              } : undefined,
+            };
+          })()
+        : undefined,
   };
 }
 

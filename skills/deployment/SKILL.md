@@ -9,7 +9,7 @@ metadata:
 
 # Memory LanceDB Pro 部署与维护指南
 
-> **版本**: 1.1.1  
+> **版本**: 1.3.0  
 > **适用**: OpenClaw 2026.4.5+  
 > **仓库**: https://github.com/canxia-hub/memory-lancedb-pro
 
@@ -17,19 +17,56 @@ metadata:
 
 ## 目录
 
-1. [系统架构](#1-系统架构)
-2. [快速部署](#2-快速部署)
-3. [配置指南](#3-配置指南)
-4. [运维命令](#4-运维命令)
-5. [健康检查](#5-健康检查)
-6. [故障排查](#6-故障排查)
-7. [最佳实践](#7-最佳实践)
+1. [功能状态矩阵](#1-功能状态矩阵)
+2. [系统架构](#2-系统架构)
+3. [快速部署](#3-快速部署)
+4. [配置指南](#4-配置指南)
+5. [运维命令](#5-运维命令)
+6. [健康检查](#6-健康检查)
+7. [故障排查](#7-故障排查)
+8. [最佳实践](#8-最佳实践)
 
 ---
 
-## 1. 系统架构
+## 1. 功能状态矩阵
 
-### 1.1 六层记忆架构
+> 本章节明确区分功能的稳定性状态，避免新会话误判完成度。
+
+### ✅ 已稳定实现
+
+| 功能 | 状态 | 说明 |
+|------|------|------|
+| LanceDB 存储 | ✅ 稳定 | 向量 + 全文索引，支持 6 类记忆 |
+| 混合检索 | ✅ 稳定 | Vector + BM25 + Rerank |
+| 记忆工具 | ✅ 稳定 | memory_store / memory_recall / memory_update / memory_list |
+| Smart Extraction | ✅ 稳定 | LLM 驱动的自动提取 |
+| Decay Engine | ✅ 稳定 | Weibull 生命周期衰减 |
+| Tier Manager | ✅ 稳定 | Core / Working / Peripheral 分层 |
+| Memory Compaction | ✅ 稳定 | 相似记忆合并压缩 |
+| Shared Search Runtime | ✅ 稳定 | v1.3.0 修复，memory-wiki 可用 |
+| Dreaming Config | ✅ 稳定 | v1.3.0 修复，schema/parser/type/runtime 统一 |
+
+### ⏳ 已接线待验证
+
+| 功能 | 状态 | 说明 |
+|------|------|------|
+| Dreaming Phases | ⏳ 待验证 | Light/Deep/REM 三类 phase 输出，需长期运行验证 |
+| Daily Digest | ⏳ 待验证 | phase → complete/highlights 闭环，已验证基本功能 |
+| Bridge Integration | ⏳ 待验证 | memory-wiki bridge 正常工作 |
+
+### 📋 待补齐 / 计划中
+
+| 功能 | 状态 | 说明 |
+|------|------|------|
+| Bridge Markdown 清洗 | 📋 计划中 | 需 memory-wiki 配合，降低 lint 噪音 |
+| Context Packet 自动注入 | 📋 计划中 | 当前仅手动组装 |
+| Episode-like 自动晋升 | 📋 计划中 | candidate → durable 自动化 |
+
+---
+
+## 2. 系统架构
+
+### 2.1 六层记忆架构
 
 ```
 Layer 0: 会话启动入口
@@ -51,7 +88,7 @@ Layer 5: 长期结构化记忆层（LanceDB）
   memory_store / memory_recall 工具
 ```
 
-### 1.2 核心组件
+### 2.2 核心组件
 
 | 组件 | 职责 |
 |------|------|
@@ -63,7 +100,7 @@ Layer 5: 长期结构化记忆层（LanceDB）
 | Tier Manager | Core / Working / Peripheral 分层 |
 | Compactor | 相似记忆合并压缩 |
 
-### 1.3 数据流
+### 2.3 数据流
 
 ```
 会话进行 → autoCapture/smartExtraction
@@ -78,9 +115,9 @@ Layer 5: 长期结构化记忆层（LanceDB）
 
 ---
 
-## 2. 快速部署
+## 3. 快速部署
 
-### 2.1 安装插件
+### 3.1 安装插件
 
 ```bash
 # 方式 1: 从 GitHub 克隆（推荐）
@@ -97,7 +134,7 @@ npm install
 cp -r . ~/.openclaw/extensions/memory-lancedb-pro/
 ```
 
-### 2.2 最小配置
+### 3.2 最小配置
 
 编辑 `~/.openclaw/openclaw.json`：
 
@@ -120,7 +157,7 @@ cp -r . ~/.openclaw/extensions/memory-lancedb-pro/
 }
 ```
 
-### 2.3 验证安装
+### 3.3 验证安装
 
 ```bash
 # 重启网关
@@ -135,9 +172,9 @@ openclaw status --deep | grep memory
 
 ---
 
-## 3. 配置指南
+## 4. 配置指南
 
-### 3.1 Embedding 配置
+### 4.1 Embedding 配置
 
 #### OpenAI 兼容（默认）
 
@@ -195,7 +232,7 @@ openclaw status --deep | grep memory
 }
 ```
 
-### 3.2 检索配置
+### 4.2 检索配置
 
 ```json
 {
@@ -212,7 +249,7 @@ openclaw status --deep | grep memory
 }
 ```
 
-### 3.3 智能提取配置
+### 4.3 智能提取配置
 
 ```json
 {
@@ -227,7 +264,7 @@ openclaw status --deep | grep memory
 }
 ```
 
-### 3.4 生命周期配置
+### 4.4 生命周期配置
 
 ```json
 {
@@ -243,7 +280,7 @@ openclaw status --deep | grep memory
 }
 ```
 
-### 3.5 完整生产配置示例
+### 4.5 完整生产配置示例
 
 ```json
 {
@@ -290,9 +327,9 @@ openclaw status --deep | grep memory
 
 ---
 
-## 4. 运维命令
+## 5. 运维命令
 
-### 4.1 CLI 工具
+### 5.1 CLI 工具
 
 ```bash
 # 查看统计信息
@@ -308,7 +345,7 @@ openclaw memory-pro migrate
 openclaw memory-pro doctor
 ```
 
-### 4.2 记忆管理工具（需启用 enableManagementTools）
+### 5.2 记忆管理工具（需启用 enableManagementTools）
 
 在会话中使用：
 
@@ -322,7 +359,7 @@ memory_update   # 更新记忆
 memory_compact  # 压缩记忆
 ```
 
-### 4.3 自定义命令
+### 5.3 自定义命令
 
 | 命令 | 用途 |
 |------|------|
@@ -331,9 +368,9 @@ memory_compact  # 压缩记忆
 
 ---
 
-## 5. 健康检查
+## 6. 健康检查
 
-### 5.1 自动健康检查
+### 6.1 自动健康检查
 
 系统每日 06:00 自动执行健康检查，检查项：
 
@@ -342,7 +379,7 @@ memory_compact  # 压缩记忆
 3. candidate / episode-like 命名规范
 4. LanceDB 检索链路可用性
 
-### 5.2 手动健康检查
+### 6.2 手动健康检查
 
 ```bash
 # 检查插件加载状态
@@ -355,7 +392,7 @@ openclaw memory-pro doctor
 # 在会话中: memory_recall query="test"
 ```
 
-### 5.3 质量指标
+### 6.3 质量指标
 
 | 指标 | 目标 | 检查方法 |
 |------|------|---------|
@@ -366,9 +403,9 @@ openclaw memory-pro doctor
 
 ---
 
-## 6. 故障排查
+## 7. 故障排查
 
-### 6.1 常见错误
+### 7.1 常见错误
 
 #### 错误: `embedding must have required property 'embedding'`
 
@@ -423,7 +460,7 @@ openclaw gateway restart
 }
 ```
 
-### 6.2 诊断命令
+### 7.2 诊断命令
 
 ```bash
 # 查看网关日志
@@ -436,7 +473,7 @@ openclaw config get plugins.entries.memory-lancedb-pro
 openclaw config schema lookup plugins.entries.memory-lancedb-pro.config
 ```
 
-### 6.3 回滚操作
+### 7.3 回滚操作
 
 ```bash
 # 停止网关
@@ -458,9 +495,9 @@ openclaw gateway start
 
 ---
 
-## 7. 最佳实践
+## 8. 最佳实践
 
-### 7.1 记忆分类规范
+### 8.1 记忆分类规范
 
 | 类别 | 用途 | 示例 |
 |------|------|------|
@@ -471,7 +508,7 @@ openclaw gateway start
 | `error` | 错误经验 | "Windows 上 Docker Linux engine 不可用，优先 Windows 原生部署" |
 | `reflection` | 反思总结 | "重复问题应推动规则或架构修正" |
 
-### 7.2 写入原则
+### 8.2 写入原则
 
 ```
 ✅ 写入长期记忆：
@@ -485,7 +522,7 @@ openclaw gateway start
 - 短期噪音和流水账
 ```
 
-### 7.3 检索优化
+### 8.3 检索优化
 
 ```json
 // 高精度检索（保守）
@@ -507,7 +544,7 @@ openclaw gateway start
 }
 ```
 
-### 7.4 资源规划
+### 8.4 资源规划
 
 | 规模 | Embedding 配额 | 存储 | 并发 |
 |------|---------------|------|------|
