@@ -1,42 +1,27 @@
-# Memory LanceDB Pro (Fork)
+# Memory LanceDB Pro
 
-> Enhanced LanceDB-backed long-term memory plugin for OpenClaw with hybrid retrieval, multi-scope isolation, and management CLI.
+> Enhanced LanceDB-backed long-term memory plugin for OpenClaw with hybrid retrieval, multi-scope isolation, and **true three-phase Dreaming**.
 
-This is a fork of [win4r/memory-lancedb-pro](https://github.com/win4r/memory-lancedb-pro) with fixes for OpenClaw 2026.4.5+ compatibility.
+- **Repository**: https://github.com/canxia-hub/memory-lancedb-pro
+- **Current stable version**: `v1.3.2`
+- **Status**: production-ready
 
-## Version History
+## What is included
 
-### v1.1.3 (2026-04-09)
+- Hybrid retrieval: vector + BM25 + rerank
+- Multi-scope isolation
+- Long-context chunking
+- Memory management tools
+- Memory-Wiki bridge compatibility
+- Daily digest generation
+- Dreaming with independent **Light / Deep / REM** managed cron jobs
 
-- **Added**: DashScope multimodal embedding API support for `qwen3-vl-embedding`
-- **Fixed**: qwen3-vl-embedding no longer returns 404 error (it's not supported in OpenAI-compatible mode)
-- **Added**: Automatic markdown image parsing for multimodal content
+## v1.3.2 highlights
 
-### v1.1.2 (2026-04-08)
-
-- **Added**: Deployment & maintenance skill for new agents
-- **Added**: Comprehensive configuration guide for all embedding providers
-- **Added**: Health check and troubleshooting documentation
-- **Added**: Best practices for memory management
-
-### v1.1.1 (2026-04-08)
-
-- **Fixed**: Config schema validation error with OpenClaw 2026.4.5+ (`embedding must have required property 'embedding'`)
-- **Updated**: Synced with upstream v1.1.0-beta.10 changes
-- **Added**: Official Azure OpenAI embedding provider support
-
-## Features
-
-- **Hybrid Retrieval**: Vector similarity + BM25 keyword search
-- **Cross-Encoder Reranking**: Jina / SiliconFlow / Voyage / Pinecone / Dashscope
-- **Multi-Scope Isolation**: Per-agent memory namespaces
-- **Long-Context Chunking**: Automatic document splitting
-- **Smart Extraction**: LLM-powered memory extraction
-- **Memory Compaction**: Automatic memory consolidation
-- **Temporal Classification**: Time-aware memory categorization
-- **Admission Control**: Quality gating for new memories
-- **Decay Engine**: Time-based memory importance decay
-- **CLI Tools**: `openclaw memory-pro stats`, `openclaw memory-pro compact`, etc.
+- Finalized **true three-phase Dreaming** scheduling
+- Deep phase keeps the official memory-core promotion identity so Control UI and doctor status continue to work
+- Reconciles legacy single-cron Dreaming jobs into the new three-cron model
+- Updated docs to reflect the current OpenClaw runtime contract
 
 ## Installation
 
@@ -44,14 +29,15 @@ This is a fork of [win4r/memory-lancedb-pro](https://github.com/win4r/memory-lan
 cd ~/.openclaw/extensions
 git clone https://github.com/canxia-hub/memory-lancedb-pro.git
 cd memory-lancedb-pro
+git checkout v1.3.2
 npm install
 ```
 
-## Configuration
+## Minimal configuration
 
-Add to your `openclaw.json`:
+Add this to `openclaw.json`:
 
-```json
+```json5
 {
   "plugins": {
     "entries": {
@@ -64,9 +50,9 @@ Add to your `openclaw.json`:
             "apiKey": "${OPENAI_API_KEY}",
             "baseURL": "https://api.openai.com/v1"
           },
-          "retrieval": {
-            "mode": "hybrid",
-            "rerank": "cross-encoder"
+          "dreaming": {
+            "enabled": true,
+            "timezone": "Asia/Shanghai"
           }
         }
       }
@@ -74,6 +60,108 @@ Add to your `openclaw.json`:
   }
 }
 ```
+
+## Recommended Dreaming configuration
+
+```json5
+{
+  "plugins": {
+    "entries": {
+      "memory-lancedb-pro": {
+        "enabled": true,
+        "config": {
+          "embedding": {
+            "provider": "openai-compatible",
+            "model": "text-embedding-3-small",
+            "apiKey": "${OPENAI_API_KEY}"
+          },
+          "enableManagementTools": true,
+          "dreaming": {
+            "enabled": true,
+            "frequency": "0 3 * * *",
+            "timezone": "Asia/Shanghai",
+            "verboseLogging": false,
+            "storage": {
+              "mode": "inline",
+              "separateReports": false
+            },
+            "execution": {
+              "speed": "balanced",
+              "thinking": "medium",
+              "budget": "medium"
+            },
+            "phases": {
+              "light": {
+                "enabled": true,
+                "cron": "0 */6 * * *",
+                "lookbackDays": 2,
+                "limit": 100
+              },
+              "deep": {
+                "enabled": true,
+                "cron": "0 3 * * *",
+                "limit": 10,
+                "minScore": 0.8,
+                "minRecallCount": 3,
+                "minUniqueQueries": 3
+              },
+              "rem": {
+                "enabled": true,
+                "cron": "0 5 * * 0",
+                "lookbackDays": 7,
+                "limit": 10,
+                "minPatternStrength": 0.75
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}
+```
+
+## Current Dreaming behavior
+
+When Dreaming is enabled, the plugin reconciles three managed cron jobs:
+
+- **Memory Dreaming Light**
+  - default: `0 */6 * * *`
+- **Memory Dreaming Promotion**
+  - default: `0 3 * * *`
+  - uses the official memory-core promotion event identity for compatibility
+- **Memory Dreaming REM**
+  - default: `0 5 * * 0`
+
+Outputs:
+
+- `memory/dreaming/light/YYYY-MM-DD.md`
+- `memory/dreaming/deep/YYYY-MM-DD.md`
+- `memory/dreaming/rem/YYYY-MM-DD.md`
+- daily digest outputs under `memory/YYYY-MM/`
+
+## Verification checklist
+
+After configuration changes:
+
+```bash
+openclaw doctor --non-interactive
+openclaw gateway restart
+openclaw doctor --non-interactive
+```
+
+Then verify:
+
+- plugin loads correctly
+- doctor shows Dreaming enabled
+- cron list contains Light / Promotion / REM jobs
+
+## Documentation
+
+- `CHANGELOG.md`
+- `DREAMING-FIX-REPORT.md` (historical report with current-state warning)
+- `docs/openclaw-integration-playbook.md`
+- https://github.com/canxia-hub/openclaw-memory-suite
 
 ## Credits
 

@@ -1,5 +1,25 @@
 # Changelog
 
+## 1.3.2 (True Three-Phase Dreaming Finalization)
+
+This release finalizes the current Dreaming contract and updates the public docs to match the runtime truth.
+
+### Highlights
+
+- **Finalized**: true three-phase managed cron reconciliation (`Light / Promotion / REM`)
+- **Kept compatibility**: Deep phase continues using the official memory-core promotion identity so Control UI and `doctor.memory.status` still recognize the main promotion lane
+- **Added**: legacy single-cron Dreaming job detection and migration logic
+- **Updated**: repository README and Dreaming guidance to reflect the latest configuration method
+
+### Recommended configuration model
+
+- `dreaming.enabled = true`
+- set `dreaming.timezone`
+- configure `phases.light`, `phases.deep`, and `phases.rem` explicitly when you want deterministic schedules
+- run `openclaw doctor --non-interactive` before gateway restart after config edits
+
+---
+
 ## 1.3.0 (Shared Search Runtime + Dreaming Config Unification)
 
 This release fixes critical integration issues and unifies dreaming configuration across schema, parser, type, and runtime layers.
