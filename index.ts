@@ -60,6 +60,7 @@ import {
 } from "./src/memory-host-interop.js";
 import { createDreamingInteropWriter } from "./src/dreaming-interop.js";
 import { runDailyDigest } from "./src/daily-digest.js";
+import { registerDreamingSystemEventHandler } from "./src/dreaming/index.js";
 
 // Import smart extraction & lifecycle components
 import { SmartExtractor, createExtractionRateLimiter } from "./src/smart-extractor.js";
@@ -2278,6 +2279,52 @@ const memoryLanceDBProPlugin = {
             api.logger.warn(`memory-compactor [auto]: failed: ${String(err)}`);
           });
       });
+    }
+
+    // ========================================================================
+    // Dreaming Scheduler - System event handler for memory consolidation
+    // ========================================================================
+    // 使用正确的 OpenClaw API 注册 dreaming 系统事件处理器
+    // 基于 memory-core 的实现模式：
+    // 1. 注册 gateway:startup hook 创建 cron 任务
+    // 2. 注册 before_agent_reply hook 处理系统事件
+    api.logger.info(`memory-lancedb-pro: dreaming config check (enabled=${config.dreaming?.enabled}, hasConfig=${!!config.dreaming})`);
+    
+    if (config.dreaming?.enabled) {
+      try {
+        registerDreamingSystemEventHandler(
+          api,
+          {
+            enabled: config.dreaming.enabled,
+            frequency: config.dreaming.frequency,
+            timezone: config.dreaming.timezone,
+            verboseLogging: config.dreaming.verboseLogging,
+            storage: config.dreaming.storage,
+            execution: config.dreaming.execution,
+            phases: {
+              light: config.dreaming.phases?.light || { enabled: false },
+              deep: config.dreaming.phases?.deep || { enabled: false },
+              rem: config.dreaming.phases?.rem || { enabled: false },
+            },
+          },
+          {
+            store,
+            retriever,
+            embedder,
+            llmClient: smartExtractor ? undefined : undefined, // Will be set when LLM client is available
+            dreamingInterop: dreamingInteropWriter,
+            workspaceDir: getDefaultWorkspaceDir(),
+          }
+        );
+
+        (isCliMode() ? api.logger.debug : api.logger.info)(
+          "memory-lancedb-pro: dreaming system event handler registered"
+        );
+      } catch (err) {
+        api.logger.warn(
+          `memory-lancedb-pro: dreaming registration failed: ${String(err)}`
+        );
+      }
     }
 
     // ========================================================================

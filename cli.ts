@@ -30,6 +30,8 @@ import {
   type AgentWorkspaceMap,
 } from "./src/memory-host-interop.js";
 import { readMemoryHostEvents } from "openclaw/plugin-sdk/memory-host-events";
+import { registerDreamingCLI } from "./src/dreaming-cli.js";
+import { createDreamingInteropWriter } from "./src/dreaming-interop.js";
 
 // ============================================================================
 // Types
@@ -1763,6 +1765,15 @@ export function registerMemoryCLI(program: Command, context: CLIContext): void {
         process.exit(1);
       }
     });
+
+  // Dreaming commands (register under memory-pro subcommand)
+  registerDreamingCLI(memory, {
+    store: context.store,
+    retriever: context.retriever,
+    embedder: context.embedder!,
+    dreamingInterop: createDreamingInteropWriter({ logger: console }),
+    pluginConfig: context.pluginConfig,
+  });
 }
 
 // ============================================================================
