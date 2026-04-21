@@ -125,13 +125,13 @@ Add this to `openclaw.json`:
 
 When Dreaming is enabled, the plugin reconciles three managed cron jobs:
 
-- **Memory Dreaming Light**
-  - default: `0 */6 * * *`
-- **Memory Dreaming Promotion**
-  - default: `0 3 * * *`
-  - uses the official memory-core promotion event identity for compatibility
-- **Memory Dreaming REM**
-  - default: `0 5 * * 0`
+| Phase | Cron Name | Event Text | Default Schedule |
+|-------|-----------|------------|------------------|
+| Light | Memory Dreaming Light | `__openclaw_memory_lancedb_pro_dreaming_light__` | `0 */6 * * *` |
+| Deep | Memory Dreaming Promotion | `__openclaw_memory_core_short_term_promotion_dream__` | `0 3 * * *` |
+| REM | Memory Dreaming REM | `__openclaw_memory_lancedb_pro_dreaming_rem__` | `0 5 * * 0` |
+
+> **Important**: Deep phase uses `__openclaw_memory_core_short_term_promotion_dream__` (not `__openclaw_memory_lancedb_pro_dreaming_deep__`) for compatibility with Control UI and `doctor.memory.status`.
 
 Outputs:
 
@@ -139,6 +139,47 @@ Outputs:
 - `memory/dreaming/deep/YYYY-MM-DD.md`
 - `memory/dreaming/rem/YYYY-MM-DD.md`
 - daily digest outputs under `memory/YYYY-MM/`
+
+## Manual Cron Task Configuration
+
+If you need to manually create Dreaming cron tasks (e.g., when auto-registration fails), use these settings:
+
+```json5
+// Light Phase - every 6 hours
+{
+  "name": "Memory Dreaming Light",
+  "description": "[managed-by=memory-lancedb-pro.dreaming.light] Stage recent short-term material",
+  "enabled": true,
+  "schedule": { "kind": "cron", "expr": "0 */6 * * *", "tz": "Asia/Shanghai" },
+  "sessionTarget": "main",
+  "wakeMode": "now",
+  "payload": { "kind": "systemEvent", "text": "__openclaw_memory_lancedb_pro_dreaming_light__" }
+}
+
+// Deep Phase - daily at 3:00 AM
+{
+  "name": "Memory Dreaming Promotion",
+  "description": "[managed-by=memory-core.short-term-promotion] Promote weighted short-term recalls into durable memory",
+  "enabled": true,
+  "schedule": { "kind": "cron", "expr": "0 3 * * *", "tz": "Asia/Shanghai" },
+  "sessionTarget": "main",
+  "wakeMode": "now",
+  "payload": { "kind": "systemEvent", "text": "__openclaw_memory_core_short_term_promotion_dream__" }
+}
+
+// REM Phase - every Sunday at 5:00 AM
+{
+  "name": "Memory Dreaming REM",
+  "description": "[managed-by=memory-lancedb-pro.dreaming.rem] Reflect on recurring patterns",
+  "enabled": true,
+  "schedule": { "kind": "cron", "expr": "0 5 * * 0", "tz": "Asia/Shanghai" },
+  "sessionTarget": "main",
+  "wakeMode": "now",
+  "payload": { "kind": "systemEvent", "text": "__openclaw_memory_lancedb_pro_dreaming_rem__" }
+}
+```
+
+> **Critical**: Using incorrect event text will cause tasks to be skipped with "disabled" status. Always verify with `openclaw doctor --non-interactive` that the plugin has registered the expected event handlers.
 
 ## Verification checklist
 
